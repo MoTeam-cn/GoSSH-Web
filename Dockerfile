@@ -1,19 +1,45 @@
 FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
+
+# 复制依赖文件
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 复制源码
 COPY . .
 
-# 安装依赖并构建
-RUN go mod download
-RUN CGO_ENABLED=0 GOOS=linux go build -o gossh-web
+# 构建应用
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o gossh-web
 
-FROM alpine:latest
+# 使用更小的基础镜像
+FROM alpine:3.19
 
+# 安装基本工具和SSL证书
+RUN apk --no-cache add ca-certificates tzdata
+
+# 创建非root用户
+RUN adduser -D -h /app appuser
 WORKDIR /app
-COPY --from=builder /app/gossh-web .
-COPY --from=builder /app/templates ./templates
-COPY --from=builder /app/static ./static
+USER appuser
+
+# 从构建阶段复制二进制文件和资源
+COPY --from=builder --chown=appuser:appuser /app/gossh-web .
+COPY --from=builder --chown=appuser:appuser /app/templates ./templates
+COPY --from=builder --chown=appuser:appuser /app/static ./static
+
+# 元数据
+LABEL org.opencontainers.image.title="GoSSH-Web"
+LABEL org.opencontainers.image.description="强大而现代的Web终端解决方案"
+LABEL org.opencontainers.image.source="https://github.com/MoTeam-cn/GoSSH-Web"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.vendor="MoTeam-cn"
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
 
 EXPOSE 8080
 
+# 启动命令
 CMD ["./gossh-web"] 

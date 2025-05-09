@@ -198,9 +198,18 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            moteam/gossh-web:latest
-            moteam/gossh-web:${{ env.NEW_VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/gossh-web:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/gossh-web:${{ env.NEW_VERSION }}
+          labels: |
+            org.opencontainers.image.title=GoSSH-Web
+            org.opencontainers.image.description=强大而现代的Web终端解决方案
+            org.opencontainers.image.version=${{ env.NEW_VERSION }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Read Changelog
         id: changelog
@@ -224,8 +233,8 @@ jobs:
             ${{ env.changelog }}
             
             Docker image tags:
-            - moteam/gossh-web:latest
-            - moteam/gossh-web:${{ env.NEW_VERSION }}
+            - ${{ secrets.DOCKERHUB_USERNAME }}/gossh-web:latest
+            - ${{ secrets.DOCKERHUB_USERNAME }}/gossh-web:${{ env.NEW_VERSION }}
           draft: false
           prerelease: false
 
