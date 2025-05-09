@@ -28,6 +28,11 @@ COPY --from=builder --chown=appuser:appuser /app/gossh-web .
 COPY --from=builder --chown=appuser:appuser /app/templates ./templates
 COPY --from=builder --chown=appuser:appuser /app/static ./static
 
+# 设置默认环境变量
+ENV PORT=8080 \
+    HOST=0.0.0.0 \
+    LOG_LEVEL=info
+
 # 元数据
 LABEL org.opencontainers.image.title="GoSSH-Web"
 LABEL org.opencontainers.image.description="强大而现代的Web终端解决方案"
@@ -37,9 +42,9 @@ LABEL org.opencontainers.image.vendor="MoTeam-cn"
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/ || exit 1
 
-EXPOSE 8080
+EXPOSE ${PORT}
 
 # 启动命令
 CMD ["./gossh-web"] 

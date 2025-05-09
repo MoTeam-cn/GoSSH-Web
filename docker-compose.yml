@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  gossh-web:
+    image: ${DOCKER_IMAGE:-gossh-web:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gossh-web
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - PORT=8080
+      - HOST=0.0.0.0
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # 在这里添加其他环境变量
+    volumes:
+      # 可选：持久化存储
+      - ${DATA_DIR:-./data}:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s 
