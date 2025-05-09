@@ -1,3 +1,15 @@
+# GoSSH-Web 版本 v1.0.2 (2025-05-09)
+
+## 更新内容
+
+### 🔄 其他更新
+
+* [build] 增加Docker配置和使用文档
+* Mero "合并远程更改" > .git/MERGE_MSG && git merge --continue qt reset --hard origin/main e branch 'main' of https://github.com/MoTeam-cn/GoSSH-Web
+* [build] 优化Docker镜像配置和元数据
+
+
+
 # GoSSH-Web 版本 v1.0.1 (2025-05-09)
 
 ## 更新内容
