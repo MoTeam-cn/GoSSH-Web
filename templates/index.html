@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links/lib/xterm-addon-web-links.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-search/lib/xterm-addon-search.js"></script>
+    <style>
+        .terminal-container {
+            height: 500px;
+            background: #000;
+            padding: 10px;
+            margin-top: 20px;
+            border-radius: 5px;
+        }
+        #terminal {
+            height: 100%;
+            width: 100%;
+        }
+        .terminal-toolbar {
+            background: #f8f9fa;
+            padding: 5px;
+            border-radius: 5px 5px 0 0;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1>SSH Web Client</h1>
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title">SSH连接</h5>
+                        <form id="sshForm">
+                            <div class="mb-3">
+                                <label for="host" class="form-label">主机地址</label>
+                                <input type="text" class="form-control" id="host" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="port" class="form-label">端口</label>
+                                <input type="number" class="form-control" id="port" value="22" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="username" class="form-label">用户名</label>
+                                <input type="text" class="form-control" id="username" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="password" class="form-label">密码</label>
+                                <input type="password" class="form-control" id="password" required>
+                            </div>
+                            <button type="submit" class="btn btn-primary">连接</button>
+                            <button type="button" class="btn btn-danger" id="disconnect" disabled>断开</button>
+                            <button type="button" class="btn btn-warning" id="clearStorage">清除保存的连接</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-8">
+                <div class="terminal-toolbar">
+                    <button class="btn btn-sm btn-secondary" id="clearBtn">清除屏幕</button>
+                    <button class="btn btn-sm btn-secondary" id="searchBtn">搜索</button>
+                    <span class="float-end" id="connectionStatus">未连接</span>
+                </div>
+                <div class="terminal-container">
+                    <div id="terminal"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let term;
+        let ws;
+        let sessionId;
+        let fitAddon;
+        let searchAddon;
+        let reconnectTimer = null;
+        const STORAGE_KEY = 'ssh_connection_info';
+
+        // 保存连接信息到localStorage
+        function saveConnectionInfo(info) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(info));
+        }
+
+        // 从localStorage获取连接信息
+        function getConnectionInfo() {
+            const info = localStorage.getItem(STORAGE_KEY);
+            return info ? JSON.parse(info) : null;
+        }
+
+        // 初始化终端
+        function initTerminal() {
+            term = new Terminal({
+                cursorBlink: true,
+                fontSize: 14,
+                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                theme: {
+                    background: '#000000',
+                    foreground: '#ffffff',
+                    cursor: '#ffffff',
+                    selection: 'rgba(255, 255, 255, 0.3)',
+                    black: '#000000',
+                    red: '#e06c75',
+                    green: '#98c379',
+                    yellow: '#d19a66',
+                    blue: '#61afef',
+                    magenta: '#c678dd',
+                    cyan: '#56b6c2',
+                    white: '#abb2bf',
+                    brightBlack: '#5c6370',
+                    brightRed: '#e06c75',
+                    brightGreen: '#98c379',
+                    brightYellow: '#d19a66',
+                    brightBlue: '#61afef',
+                    brightMagenta: '#c678dd',
+                    brightCyan: '#56b6c2',
+                    brightWhite: '#ffffff'
+                },
+                allowTransparency: true,
+                scrollback: 1000,
+                cols: 100
+            });
+
+            fitAddon = new FitAddon.FitAddon();
+            searchAddon = new SearchAddon.SearchAddon();
+            const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+            term.loadAddon(fitAddon);
+            term.loadAddon(searchAddon);
+            term.loadAddon(webLinksAddon);
+
+            term.open(document.getElementById('terminal'));
+            fitAddon.fit();
+
+            // 监听窗口大小变化
+            window.addEventListener('resize', () => {
+                fitAddon.fit();
+            });
+
+            // 处理用户输入
+            term.onData(data => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'command',
+                        command: data
+                    }));
+                }
+            });
+
+            // 清除按钮事件
+            document.getElementById('clearBtn').addEventListener('click', () => {
+                term.clear();
+            });
+
+            // 搜索按钮事件
+            document.getElementById('searchBtn').addEventListener('click', () => {
+                searchAddon.findNext('');
+            });
+
+            return term;
+        }
+
+        // 自动重连
+        async function reconnect() {
+            const info = getConnectionInfo();
+            if (!info || !info.sessionId) return;
+
+            try {
+                // 尝试使用已有的会话ID重新连接
+                initWebSocket(info.sessionId);
+            } catch (error) {
+                console.error('重连失败:', error);
+                // 如果重连失败，尝试重新认证
+                if (info.credentials) {
+                    await authenticate(info.credentials);
+                }
+            }
+        }
+
+        // 认证函数
+        async function authenticate(credentials) {
+            try {
+                const response = await fetch('/api/auth', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(credentials)
+                });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    sessionId = result.id;
+                    // 保存认证信息和会话ID
+                    saveConnectionInfo({
+                        sessionId: sessionId,
+                        credentials: credentials
+                    });
+                    document.getElementById('disconnect').disabled = false;
+                    
+                    // 确保终端已初始化
+                    if (!term) {
+                        term = initTerminal();
+                    }
+                    term.clear();
+                    term.writeln('认证成功，正在建立连接...');
+                    initWebSocket(sessionId);
+                } else {
+                    if (!term) {
+                        term = initTerminal();
+                    }
+                    term.writeln('认证失败: ' + result.error);
+                }
+            } catch (error) {
+                if (!term) {
+                    term = initTerminal();
+                }
+                term.writeln('错误: ' + error.message);
+            }
+        }
+
+        // 初始化WebSocket连接
+        function initWebSocket(id) {
+            if (ws) {
+                ws.close();
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/${id}`);
+
+            ws.onopen = () => {
+                document.getElementById('connectionStatus').textContent = '已连接';
+                document.getElementById('connectionStatus').style.color = 'green';
+                if (!term) {
+                    term = initTerminal();
+                }
+                term.writeln('终端就绪');
+                // 清除重连定时器
+                if (reconnectTimer) {
+                    clearInterval(reconnectTimer);
+                    reconnectTimer = null;
+                }
+            };
+
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                if (message.type === 'output' || message.type === 'error') {
+                    if (!term) {
+                        term = initTerminal();
+                    }
+                    term.write(message.data);
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('connectionStatus').textContent = '未连接';
+                document.getElementById('connectionStatus').style.color = 'red';
+                if (!term) {
+                    term = initTerminal();
+                }
+                term.writeln('\r\n连接已关闭');
+                document.getElementById('disconnect').disabled = true;
+
+                // 设置重连定时器
+                if (!reconnectTimer && getConnectionInfo()) {
+                    reconnectTimer = setInterval(() => {
+                        reconnect();
+                    }, 5000); // 每5秒尝试重连
+                }
+            };
+
+            ws.onerror = (error) => {
+                if (!term) {
+                    term = initTerminal();
+                }
+                term.writeln('\r\n连接错误: ' + error.message);
+                document.getElementById('connectionStatus').textContent = '连接错误';
+                document.getElementById('connectionStatus').style.color = 'red';
+            };
+        }
+
+        // 页面加载完成后初始化
+        window.addEventListener('load', () => {
+            // 初始化终端
+            term = initTerminal();
+            
+            // 尝试恢复之前的连接
+            const info = getConnectionInfo();
+            if (info) {
+                // 填充表单
+                if (info.credentials) {
+                    document.getElementById('host').value = info.credentials.host;
+                    document.getElementById('port').value = info.credentials.port;
+                    document.getElementById('username').value = info.credentials.username;
+                    document.getElementById('password').value = info.credentials.password;
+                }
+                // 尝试重连
+                reconnect();
+            }
+        });
+
+        // 处理表单提交
+        document.getElementById('sshForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const credentials = {
+                host: document.getElementById('host').value,
+                port: parseInt(document.getElementById('port').value),
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value
+            };
+            await authenticate(credentials);
+        });
+
+        // 处理断开连接
+        document.getElementById('disconnect').addEventListener('click', async () => {
+            if (sessionId) {
+                try {
+                    const response = await fetch('/api/disconnect', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            id: sessionId
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        if (ws) {
+                            ws.close();
+                        }
+                        // 清除存储的连接信息
+                        localStorage.removeItem(STORAGE_KEY);
+                        sessionId = null;
+                        document.getElementById('disconnect').disabled = true;
+                        if (!term) {
+                            term = initTerminal();
+                        }
+                        term.writeln('已断开连接');
+                        // 清除重连定时器
+                        if (reconnectTimer) {
+                            clearInterval(reconnectTimer);
+                            reconnectTimer = null;
+                        }
+                    }
+                } catch (error) {
+                    if (!term) {
+                        term = initTerminal();
+                    }
+                    term.writeln('断开连接失败: ' + error.message);
+                }
+            }
+        });
+
+        // 处理清除存储的连接信息
+        document.getElementById('clearStorage').addEventListener('click', () => {
+            localStorage.removeItem(STORAGE_KEY);
+            document.getElementById('host').value = '';
+            document.getElementById('port').value = '22';
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+            if (!term) {
+                term = initTerminal();
+            }
+            term.writeln('已清除保存的连接信息');
+        });
+    </script>
+</body>
+</html> 
