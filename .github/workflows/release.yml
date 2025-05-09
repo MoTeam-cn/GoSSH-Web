@@ -3,13 +3,14 @@ name: Release
 on:
   push:
     branches: [ main ]
-    paths:
-      - '**.go'
-      - 'templates/**'
-      - 'static/**'
-      - 'Dockerfile'
-      - 'go.mod'
-      - 'go.sum'
+    # 移除路径限制，让所有文件都能触发
+    # paths:
+    #   - '**.go'
+    #   - 'templates/**'
+    #   - 'static/**'
+    #   - 'Dockerfile'
+    #   - 'go.mod'
+    #   - 'go.sum'
 
 jobs:
   build:
