@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**.go'
+      - 'templates/**'
+      - 'static/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  build:
+    if: "contains(github.event.head_commit.message, '[build]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Generate new version
+        id: version
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 获取最新标签版本
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.9.0")
+          
+          # 解析版本号
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -ra PARTS <<< "$VERSION"
+          
+          # 递增版本号 (补丁版本)
+          PATCH=$((PARTS[2] + 1))
+          NEW_VERSION="${PARTS[0]}.${PARTS[1]}.$PATCH"
+          
+          echo "当前版本: $VERSION, 新版本: $NEW_VERSION"
+          
+          # 更新CHANGELOG
+          DATE=$(date +"%Y-%m-%d")
+          CHANGELOG_CONTENT="# GoSSH-Web 版本 v$NEW_VERSION ($DATE)\n\n## 更新内容\n\n"
+          
+          # 获取最近提交
+          COMMITS=$(git log $LATEST_TAG..HEAD --pretty=format:"* %s" | grep -v "Merge")
+          
+          # 分类提交信息
+          FEATURES=$(echo "$COMMITS" | grep "\[feat\]" | sed 's/\[feat\] //')
+          FIXES=$(echo "$COMMITS" | grep "\[fix\]" | sed 's/\[fix\] //')
+          DOCS=$(echo "$COMMITS" | grep "\[docs\]" | sed 's/\[docs\] //')
+          CHORES=$(echo "$COMMITS" | grep "\[chore\]" | sed 's/\[chore\] //')
+          OTHERS=$(echo "$COMMITS" | grep -v "\[feat\]\|\[fix\]\|\[docs\]\|\[chore\]")
+          
+          # 添加新功能
+          if [ ! -z "$FEATURES" ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT}### ✨ 新功能\n\n$FEATURES\n\n"
+          fi
+          
+          # 添加修复
+          if [ ! -z "$FIXES" ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT}### 🐛 修复\n\n$FIXES\n\n"
+          fi
+          
+          # 添加文档更新
+          if [ ! -z "$DOCS" ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT}### 📚 文档\n\n$DOCS\n\n"
+          fi
+          
+          # 添加维护更新
+          if [ ! -z "$CHORES" ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT}### 🔧 维护\n\n$CHORES\n\n"
+          fi
+          
+          # 添加其他更新
+          if [ ! -z "$OTHERS" ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT}### 🔄 其他更新\n\n$OTHERS\n\n"
+          fi
+          
+          # 如果没有提交，添加默认消息
+          if [ -z "$COMMITS" ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT}* 维护性更新和优化\n\n"
+          fi
+          
+          # 读取现有的CHANGELOG
+          EXISTING_CHANGELOG=$(cat CHANGELOG.md)
+          
+          # 合并新旧CHANGELOG
+          echo -e "$CHANGELOG_CONTENT\n$EXISTING_CHANGELOG" > CHANGELOG.md
+          
+          # 提交更新的CHANGELOG
+          git add CHANGELOG.md
+          git commit -m "[build] Release v$NEW_VERSION"
+          git tag v$NEW_VERSION
+          git push origin main
+          git push origin v$NEW_VERSION
+          
+          # 输出版本号
+          echo "NEW_VERSION=v$NEW_VERSION" >> $GITHUB_ENV
+          echo "version=v$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build
+        run: |
+          go mod download
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o gossh-web-linux-amd64
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o gossh-web-windows-amd64.exe
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o gossh-web-darwin-amd64
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            moteam/gossh-web:latest
+            moteam/gossh-web:${{ env.NEW_VERSION }}
+
+      - name: Read Changelog
+        id: changelog
+        run: |
+          VERSION="${{ env.NEW_VERSION }}"
+          CHANGELOG=$(awk -v ver="$VERSION" 'BEGIN{flag=0} $0 ~ "# GoSSH-Web 版本 "ver{flag=1;next} $0 ~ "# GoSSH-Web 版本 v"{flag=0} flag{print}' CHANGELOG.md)
+          
+          echo "changelog<<EOF" >> $GITHUB_ENV
+          echo "$CHANGELOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.NEW_VERSION }}
+          release_name: Release ${{ env.NEW_VERSION }}
+          body: |
+            ${{ env.changelog }}
+            
+            Docker image tags:
+            - moteam/gossh-web:latest
+            - moteam/gossh-web:${{ env.NEW_VERSION }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./gossh-web-linux-amd64
+          asset_name: gossh-web-linux-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Windows Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./gossh-web-windows-amd64.exe
+          asset_name: gossh-web-windows-amd64.exe
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./gossh-web-darwin-amd64
+          asset_name: gossh-web-darwin-amd64
+          asset_content_type: application/octet-stream 

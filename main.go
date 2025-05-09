@@ -1,13 +1,18 @@
 package main
 
 import (
+	"embed"
 	"gossh-web/ssh"
+	"html/template"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+//go:embed templates/index.html
+var embedFS embed.FS
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -18,9 +23,9 @@ var upgrader = websocket.Upgrader{
 func main() {
 	r := gin.Default()
 
-	// 设置静态文件目录
-	r.Static("/static", "./static")
-	r.LoadHTMLGlob("templates/*")
+	// 从嵌入的文件系统加载模板
+	templ := template.Must(template.ParseFS(embedFS, "index.html"))
+	r.SetHTMLTemplate(templ)
 
 	// 路由设置
 	r.GET("/", func(c *gin.Context) {
